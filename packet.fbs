@@ -1,0 +1,23 @@
+namespace remoteData;
+
+enum DataType : byte { ODOMETRY = 0, MEASUREMENT = 1, END_OF_LOG = 2 }
+
+table DataPacket {
+    type: DataType = MEASUREMENT;
+     timestamp: double;
+
+     // Odometry data
+     f_velocity: double;
+     a_velocity: double;
+
+     // Measurement data
+     subject: int;
+     range: double;
+     bearing: double;
+     dual_var_y: double;
+     dual_var_theta: double;
+
+     is_separ: bool;
+}
+
+root_type DataPacket;

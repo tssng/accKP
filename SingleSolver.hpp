@@ -10,6 +10,10 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include "SafeQueue.hpp"
 #include "SensorParser.hpp"
+#include "packet_generated.h"
+#include <boost/asio.hpp>
+
+using boost::asio::ip::udp;
 
 //testing
 #include <fstream>
@@ -21,7 +25,7 @@
 class SingleSolver
 {
 private:
-	char id;
+	int id;
 	gtsam::ISAM2 isam;
 	SensorParser parser;
 
@@ -30,8 +34,7 @@ private:
 	std::thread sensor_thread;
 	//std::thread network_thread;
 	SafeQueue data_queue;
-
-
+	boost::asio::io_context io_context;
 
 	//for testing purposes
 	std::map<gtsam::Symbol, double> key_to_timestamp;
@@ -52,7 +55,12 @@ private:
 	gtsam::noiseModel::Diagonal::shared_ptr prior_noise;
 	gtsam::noiseModel::Diagonal::shared_ptr br_noise;
 public:
-	explicit SingleSolver(const char id, const double x, const double y, const double theta, const std::string& odom_path, const std::string& meas_path) :
+	explicit SingleSolver(const int id,
+						const double x,
+						const double y,
+						const double theta,
+						const std::string& odom_path,
+						const std::string& meas_path) :
 		id(id), parser(odom_path, meas_path){
 		graph = gtsam::NonlinearFactorGraph();
 		odom_accum = gtsam::Pose2();
@@ -61,6 +69,11 @@ public:
 		odom_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.05, 0.05, 0.05));
 		prior_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.01, 0.01, 0.01));
 		br_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector2(0.05, 0.05));
+	}
+
+	~SingleSolver() {
+		if (sensor_thread.joinable()) {sensor_thread.join();}
+		//if (network_thread.joinable()) {network_thread.join();}
 	}
 
 	void run() {
@@ -149,27 +162,87 @@ private:
 	}
 
 	void sensorLoop() {
+		udp::socket tx_socket(io_context, udp::endpoint(udp::v4(), 0));
 		while (running)
 		{
 			DataPacket data = parser.getNextPacket();
-			if (data.type == END_OF_LOG)
+			if (data.type == END_OF_LOG) // no more data
 			{
 				data_queue.push_to_buffer(data);
 				break;
 			}
+			/*
+			if (robot_keys.contains(data.subject)) // received a separator node
+			{
+				// need to send to relevant agent
+
+				// build flatbuffer
+				flatbuffers::FlatBufferBuilder builder(1024);
+				auto packet_offset = remoteData::CreateDataPacket(
+						builder,
+						remoteData::DataType_MEASUREMENT, // type
+						data.timestamp,      // timestamp
+						data.f_velocity,               // f_velocity
+						data.a_velocity,               // a_velocity
+						data.subject,                 // subject (unused for odom)
+						data.range,               // range (unused for odom)
+						data.bearing,                // bearing (unused for odom)
+						true
+	);
+				builder.Finish(packet_offset);
+
+				// get endpoint and send
+				boost::asio::ip::address addr = boost::asio::ip::make_address("127.0.0.1");
+				udp::endpoint dest(addr, 5000 + data.subject);
+
+				tx_socket.send_to(boost::asio::buffer(builder.GetBufferPointer(), builder.GetSize()), dest);
+				continue;
+			}
+			*/
 			data_queue.push_to_buffer(data);
-			//std::this_thread::sleep_for(std::chrono::microseconds(100));
+
 		}
 	}
 
-	/*
+
 	void networkLoop() {
+		udp::socket rx_socket(io_context, udp::endpoint(udp::v4(), 5000 + id));
+
+		std::array<uint8_t, 1024> recv_buffer {0};
+		udp::endpoint remote_endpoint;
+
 		while (running)
 		{
+			boost::system::error_code error;
+			// (blocking!) receive
+			size_t len = rx_socket.receive_from(boost::asio::buffer(recv_buffer), remote_endpoint, 0, error);
 
+			if (!error && len > 0) {
+				auto fb_packet = remoteData::GetDataPacket(recv_buffer.data());
+
+				DataPacket packet;
+				packet.type = static_cast<DataType>(fb_packet->type());
+				packet.timestamp = fb_packet->timestamp();
+
+				// estimated global frame vars
+				packet.f_velocity = fb_packet->f_velocity();
+				packet.a_velocity = fb_packet->a_velocity();
+				packet.range = fb_packet->range();
+
+				packet.subject = fb_packet->subject();
+
+				// dual variable updates
+				packet.bearing = fb_packet->bearing();
+				packet.dual_var_y = fb_packet->dual_var_y();
+				packet.dual_var_theta = fb_packet->dual_var_theta();
+
+				packet.is_separ = true; // Mark as from network
+
+				data_queue.push_to_buffer(packet);
+			}
 		}
 	}
-	*/
+
 
 	void solverLoop() {
 		DataPacket data;

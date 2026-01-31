@@ -84,7 +84,10 @@ struct DataPacket
 	// type == MEASUREMENT
 	int subject = 0;
 	double range = 0.0,
-		   bearing = 0.0;
+		   bearing = 0.0,
+	       dual_var_y = 0.0,
+	       dual_var_theta = 0.0;
+	bool is_separ = false;
 };
 
 #endif //GRAPH_TYPES_HPP

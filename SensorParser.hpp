@@ -4,6 +4,7 @@
 #include "graph_types.hpp"
 #include <iostream>
 #include <fstream>
+#include <unordered_set>
 #include <iomanip>
 
 /*
