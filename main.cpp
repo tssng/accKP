@@ -7,7 +7,7 @@ void testSingle() {
 	std::string odom_path ="../data/Robot1_Odometry.dat";
 	std::string meas_path = "../data/Robot1_Measurement.dat";
 	SensorParser parser("../data/Robot1_Odometry.dat", "../data/Robot1_Measurement.dat");
-	SingleSolver test_bot('a', 3.3,-3.3,2.3,odom_path, meas_path);
+	SingleSolver test_bot(5, 3.3,-3.3,2.3,odom_path, meas_path);
 
 	test_bot.run();
 

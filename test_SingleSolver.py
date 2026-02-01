@@ -15,9 +15,9 @@ def get_nearest_gt(timestamp, gt_data):
 
 # 1. Load Data
 # estimates = [timestamp, x, y, theta]
-my_slam = read_pose_file("resultsRobotb.txt")
+my_slam = read_pose_file("resultsSingle.txt")
 # gt = [timestamp, x, y, theta] (Format depends on dataset, check README)
-ground_truth = read_pose_file("./data/Robot2_GroundTruth.dat")
+ground_truth = read_pose_file("./data/Robot1_GroundTruth.dat")
 
 # ahift my_slam so its first point matches the GT's first point (at that time)
 start_time = my_slam[0, 0]

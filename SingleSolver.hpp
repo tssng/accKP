@@ -31,10 +31,12 @@ private:
 
 	// thread handling
 	std::atomic<bool> running{false};
-	std::thread sensor_thread;
-	//std::thread network_thread;
+	std::thread sensor_thread,
+				network_thread;
 	SafeQueue data_queue;
 	boost::asio::io_context io_context;
+	udp::socket tx_socket,
+				rx_socket;
 
 	//for testing purposes
 	std::map<gtsam::Symbol, double> key_to_timestamp;
@@ -61,19 +63,30 @@ public:
 						const double theta,
 						const std::string& odom_path,
 						const std::string& meas_path) :
-		id(id), parser(odom_path, meas_path){
+			id(id),
+			parser(odom_path, meas_path),
+			io_context(),
+			tx_socket(io_context, udp::endpoint(udp::v4(), 0)),
+			rx_socket(io_context, udp::endpoint(udp::v4(), 5000 + id)) {
+
 		graph = gtsam::NonlinearFactorGraph();
 		odom_accum = gtsam::Pose2();
 		current_pose = gtsam::Pose2(x, y, theta);
 
-		odom_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.05, 0.05, 0.05));
-		prior_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.01, 0.01, 0.01));
-		br_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector2(0.05, 0.05));
+		odom_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.1, 0.1, 0.1));
+		prior_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector3(0.1, 0.1, 0.1));
+		br_noise = gtsam::noiseModel::Diagonal::Sigmas(gtsam::Vector2(0.1, 0.1));
+
 	}
 
 	~SingleSolver() {
+		running = false;
+		io_context.stop();
+
+		if (tx_socket.is_open()) {tx_socket.close();}
+		if (rx_socket.is_open()) {rx_socket.close();}
 		if (sensor_thread.joinable()) {sensor_thread.join();}
-		//if (network_thread.joinable()) {network_thread.join();}
+		if (network_thread.joinable()) {network_thread.join();}
 	}
 
 	void run() {
@@ -145,6 +158,9 @@ private:
 	double LINEAR_THRESHOLD {0.05};
 	double ANGULAR_THRESHOLD {0.1};
 
+	std::array<uint8_t, 1024> recv_buffer {0};
+	udp::endpoint rx_endpoint;
+
 	void addNewPose() {
 		const gtsam::Symbol cur_key(id, pose_index);
 		pose_index++;
@@ -162,7 +178,6 @@ private:
 	}
 
 	void sensorLoop() {
-		udp::socket tx_socket(io_context, udp::endpoint(udp::v4(), 0));
 		while (running)
 		{
 			DataPacket data = parser.getNextPacket();
@@ -206,41 +221,8 @@ private:
 
 
 	void networkLoop() {
-		udp::socket rx_socket(io_context, udp::endpoint(udp::v4(), 5000 + id));
-
-		std::array<uint8_t, 1024> recv_buffer {0};
-		udp::endpoint remote_endpoint;
-
-		while (running)
-		{
-			boost::system::error_code error;
-			// (blocking!) receive
-			size_t len = rx_socket.receive_from(boost::asio::buffer(recv_buffer), remote_endpoint, 0, error);
-
-			if (!error && len > 0) {
-				auto fb_packet = remoteData::GetDataPacket(recv_buffer.data());
-
-				DataPacket packet;
-				packet.type = static_cast<DataType>(fb_packet->type());
-				packet.timestamp = fb_packet->timestamp();
-
-				// estimated global frame vars
-				packet.f_velocity = fb_packet->f_velocity();
-				packet.a_velocity = fb_packet->a_velocity();
-				packet.range = fb_packet->range();
-
-				packet.subject = fb_packet->subject();
-
-				// dual variable updates
-				packet.bearing = fb_packet->bearing();
-				packet.dual_var_y = fb_packet->dual_var_y();
-				packet.dual_var_theta = fb_packet->dual_var_theta();
-
-				packet.is_separ = true; // Mark as from network
-
-				data_queue.push_to_buffer(packet);
-			}
-		}
+		start_async_receive();
+		io_context.run();
 	}
 
 
@@ -255,7 +237,37 @@ private:
 		running = false;
 
 		if (sensor_thread.joinable()) {sensor_thread.join();}
-		//if (network_thread.joinable()) {network_thread.join();}
+		if (network_thread.joinable()) {network_thread.join();}
+	}
+
+	void start_async_receive() {
+		rx_socket.async_receive_from(
+			boost::asio::buffer(recv_buffer), rx_endpoint,
+			[this](const boost::system::error_code& ec, std::size_t len) {
+				if (!ec && len > 0) {
+					const auto fb_packet = remoteData::GetDataPacket(recv_buffer.data());
+
+					DataPacket packet;
+					packet.type = static_cast<DataType>(fb_packet->type());
+					packet.timestamp = fb_packet->timestamp();
+
+					// estimated global frame vars
+					packet.f_velocity = fb_packet->f_velocity();
+					packet.a_velocity = fb_packet->a_velocity();
+					packet.range = fb_packet->range();
+
+					packet.subject = fb_packet->subject();
+
+					// dual variable updates
+					packet.bearing = fb_packet->bearing();
+					packet.dual_var_y = fb_packet->dual_var_y();
+					packet.dual_var_theta = fb_packet->dual_var_theta();
+
+					packet.is_separ = true; //mark as separator
+					data_queue.push_to_buffer(packet);
+					start_async_receive(); // loop the async call
+				}
+			});
 	}
 
 	bool processData(const DataPacket& data) {
@@ -290,6 +302,7 @@ private:
 			last_timestamp = data.timestamp;
 			// add movement to transformatino accumulator
 			odom_accum = odom_accum.compose(gtsam::Pose2::Expmap(odom_vector));
+			current_pose = current_pose.compose(gtsam::Pose2::Expmap(odom_vector));
 
 
 			// if robot has moved / turned enough, then update pose
